@@ -1250,14 +1250,22 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
     
     boolean hasData = false;
     try {
-        byte[] buf = value.getBytes();
+        byte[] wholebuf = value.getBytes();
         int len = value.getLength();
         lineSize = len;
         lineText = value;
         
         updateInputInfo();
         
-        byte[] pbraw = Base64.decodeBase64(buf, len);
+        //byte[] pbraw = Base64.decodeBase64(wholebuf, len);
+        byte[] goodbuf = wholebuf;
+        if(goodbuf.length != len)
+        {
+            goodbuf = new byte[len];
+            System.arraycopy(wholebuf, 0, goodbuf, 0, len);
+        }
+        byte[] pbraw = Base64.decodeBase64(goodbuf);
+        
         msgSize = pbraw.length;
         Message.Builder builder = newBuilder();
         Message msg = builder.mergeFrom(pbraw).build();

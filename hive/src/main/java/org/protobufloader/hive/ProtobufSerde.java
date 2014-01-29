@@ -34,9 +34,9 @@ import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoUtils;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory;
 import org.apache.hadoop.hive.serde2.typeinfo.StructTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
+import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.hive.serde2.lazy.ByteArrayRef;
 
 import com.google.protobuf.Message;
 import com.google.protobuf.Descriptors;
@@ -54,7 +54,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
     private List<Object> row = new ArrayList<Object>();
     String clsMapping;
     Method newBuilderMethod;
-    protected LoadFieldTuple resultType;
+    protected LoadFieldStruct resultType;
     boolean resultNullable = false;
     Configuration conf;
     
@@ -196,19 +196,19 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
     }
 
 
-    LoadFieldTuple repairMessageSchema(Message msg, StructTypeInfo parentTypeInfo)
+    LoadFieldStruct repairMessageSchema(Message msg, StructTypeInfo parentTypeInfo)
     {
         return repairMessageSchema(null, msg.getDescriptorForType(), parentTypeInfo);
     }
     
-    LoadFieldTuple repairMessageSchema(String[] parent, Descriptors.Descriptor desc, ListTypeInfo parentTypeInfo)
+    LoadFieldStruct repairMessageSchema(String[] parent, Descriptors.Descriptor desc, ListTypeInfo parentTypeInfo)
     {
         return repairMessageSchema(parent, desc, (StructTypeInfo)parentTypeInfo.getListElementTypeInfo());
     }
     
-    LoadFieldTuple repairMessageSchema(String[] parent, Descriptors.Descriptor desc, StructTypeInfo parentTypeInfo)
+    LoadFieldStruct repairMessageSchema(String[] parent, Descriptors.Descriptor desc, StructTypeInfo parentTypeInfo)
     {
-        LoadFieldTuple result = new LoadFieldTuple(parentTypeInfo);
+        LoadFieldStruct result = new LoadFieldStruct(parentTypeInfo);
         
         /*
             //Descriptors.Descriptor xdesc = msg.getDescriptorForType();
@@ -345,10 +345,27 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                         //Message vmsg = (Message)v;
                         Descriptors.Descriptor vdesc = fd.getMessageType();
                         fieldClassName = vdesc.getName();
-                        LoadFieldTuple lft;
+                        LoadFieldStruct lft;
                         if(fd.isRepeated())
                         {
-                            lft = repairMessageSchema(protoFieldPath, vdesc, (ListTypeInfo)f);
+                            if(f.getCategory().equals(ObjectInspector.Category.MAP))
+                            {
+                                // Let's make a ListTypeInfo wrapping a StructTypeInfo for schema lookup.
+                                MapTypeInfo mti = (MapTypeInfo)f;
+                                List<String> names = new ArrayList<String>();
+                                names.add("key"); // Note: only works if they are literally called this in the proto.
+                                names.add("value");
+                                List<TypeInfo> types = new ArrayList<TypeInfo>();
+                                types.add(mti.getMapKeyTypeInfo());
+                                types.add(mti.getMapValueTypeInfo());
+                                TypeInfo elementti = TypeInfoFactory.getStructTypeInfo(names, types);
+                                ListTypeInfo lti = (ListTypeInfo)TypeInfoFactory.getListTypeInfo(elementti);
+                                lft = repairMessageSchema(protoFieldPath, vdesc, lti);
+                            }
+                            else
+                            {
+                                lft = repairMessageSchema(protoFieldPath, vdesc, (ListTypeInfo)f);
+                            }
                         }
                         else
                         {
@@ -433,10 +450,10 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                         {
                             lf.name = name;
                         }
-                        if(fd.isRepeated())
+                        /*if(fd.isRepeated())
                         {
                             throw new RuntimeException("array of non-structs not supported yet");
-                        }
+                        }*/
                     }
                     if(lf == null)
                     {
@@ -445,6 +462,19 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                     }
                     lf.nullable = nullable;
                     lf.protoFieldPath = protoFieldPath;
+                    if(fd.isRepeated())
+                    {
+                        LoadFieldArray lfbag = new LoadFieldArray();
+                        LoadField lfelement = lf;
+                        lfbag.fields.add(lfelement);
+                        lfbag.hiveTypeInfo = TypeInfoFactory.getListTypeInfo(lfelement.hiveTypeInfo);
+                        lf = lfbag;
+                        if(f.getCategory().equals(ObjectInspector.Category.MAP))
+                        {
+                            LoadFieldArrayToMap lfmap = new LoadFieldArrayToMap(lfbag);
+                            lf = lfmap;
+                        }
+                    }
                     result.fields.add(lf);
                     break;
                 }
@@ -495,12 +525,19 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         
         T getValue(Message msg)
         {
-            return null;
+            String xname = "N/A";
+            if(this.name != null)
+            {
+                xname = this.name;
+            }
+            throw new RuntimeException("Value not implemented for " + xname);
+            //return null;
         }
         
+        // Null return indicates the end of the repeated field.
+        // This is valid because protobuf does not allow null entries in repeated fields.
         T getValueRepeated(Message msg, int index)
         {
-            // FIXME
             String xname = "N/A";
             if(this.name != null)
             {
@@ -575,32 +612,28 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         
     }
     
-    // A bag is an array in hive.
-    static class LoadFieldBag extends LoadFieldNestable<List<Object>>
+    static class LoadFieldArray extends LoadFieldNestable<List<Object>>
     {
-        List<Object> bag;
-        
-        LoadFieldBag(StructTypeInfo ti)
+        LoadFieldArray()
         {
             super();
-            this.hiveTypeInfo = ti;
-            this.bag = new ArrayList<Object>();
+            //this.hiveTypeInfo = ti;
+            this.hiveTypeInfo = TypeInfoFactory.unknownTypeInfo;
         }
         
         @Override
         List<Object> getValue(Message msg)
         {
-            if(fields.size() != 1 || !(fields.get(0) instanceof LoadFieldTuple))
+            if(fields.size() != 1)
             {
-                throw new RuntimeException("LoadFieldBag expects one field of type LoadFieldTuple");
+                throw new RuntimeException("LoadFieldArray expects 1 field, not " + fields.size());
             }
-            this.bag.clear();
-            List<Object> result = this.bag;
+            List<Object> result = new ArrayList<Object>();
             LoadField element = fields.get(0);
             for(int i = 0;; i++)
             {
                 Object x = element.getValueRepeated(msg, i);
-                if(x == null) // BUG: non-tuple rows can have null values, will cause the loop to end early!
+                if(x == null)
                 {
                     break;
                 }
@@ -611,51 +644,83 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         
     }
     
-    static class LoadFieldBagToMap extends LoadField<Map>
+    
+    static class LoadFieldArrayToMap extends LoadField<Map>
     {
-        LoadFieldTuple bagTuple;
+        LoadField arrayField;
+        LoadFieldStruct arrayFieldIsStruct = null;
+        boolean mapValueIsImplicitCount = false;
         
-        LoadFieldBagToMap(List<LoadField> bagFields)
+        public LoadFieldArrayToMap(LoadFieldArray lfarray)
         {
-            super();
-            if(bagFields.size() != 1 || !(bagFields.get(0) instanceof LoadFieldTuple))
+            this.name = lfarray.name;
+            this.nullable = lfarray.nullable;
+            if(lfarray.fields.size() != 1 || !(lfarray.fields.get(0) instanceof LoadFieldStruct))
             {
-                throw new RuntimeException("LoadFieldBagToMap bag expects one field of type LoadFieldTuple");
+                throw new RuntimeException("LoadFieldArrayToMap bag expects one field");
             }
-            //LoadField tuple = bagFields.get(0);
-            LoadFieldTuple tuple = (LoadFieldTuple)bagFields.get(0);
-            if(tuple.fields.size() == 0 || tuple.fields.size() > 2)
+            this.arrayField = lfarray.fields.get(0);
+            if(this.arrayField instanceof LoadFieldStruct)
             {
-                throw new RuntimeException("Map needs 1 or 2 fields for key=value");
+                LoadFieldStruct tuple = (LoadFieldStruct)this.arrayField;
+                this.arrayFieldIsStruct = tuple;
+                int nfields = tuple.fields.size();
+                if(nfields == 0 || nfields > 2)
+                {
+                    throw new RuntimeException("Map needs 1 or 2 fields for key=value");
+                }
+                if(nfields == 1)
+                {
+                    this.hiveTypeInfo = TypeInfoFactory.getMapTypeInfo(tuple.fields.get(0).hiveTypeInfo, TypeInfoFactory.longTypeInfo);
+                    this.mapValueIsImplicitCount = true;
+                }
+                else
+                {
+                    this.hiveTypeInfo = TypeInfoFactory.getMapTypeInfo(tuple.fields.get(0).hiveTypeInfo,
+                        tuple.fields.get(1).hiveTypeInfo);
+                }
             }
-            bagTuple = tuple;
-        }
-        
-        LoadFieldBagToMap(LoadFieldBag bag)
-        {
-            this(bag.fields);
+            else
+            {
+                this.hiveTypeInfo = TypeInfoFactory.getMapTypeInfo(this.arrayField.hiveTypeInfo, TypeInfoFactory.longTypeInfo);
+                this.mapValueIsImplicitCount = true;
+            }
         }
         
         @Override
         Map getValue(Message msg)
         {
             HashMap result = new HashMap();
-            LoadFieldTuple tuple = bagTuple;
             for(int i = 0;; i++)
             {
-                List<Object> row = tuple.getValueRepeated(msg, i);
-                if(row == null)
+                Object k, v;
+                LoadFieldStruct tuple = this.arrayFieldIsStruct;
+                if(tuple != null)
                 {
-                    break;
-                }
-                Object k = row.get(0);
-                Object v;
-                if(row.size() > 1)
-                {
-                    v = row.get(1);
+                    List<Object> row = tuple.getValueRepeated(msg, i);
+                    if(row == null)
+                    {
+                        break;
+                    }
+                    k = row.get(0);
+                    if(this.mapValueIsImplicitCount)
+                    {
+                        v = (Long)1L;
+                    }
+                    else
+                    {
+                        v = row.get(1);
+                    }
                 }
                 else
                 {
+                    LoadField field = this.arrayField;
+                    Object row = field.getValueRepeated(msg, i);
+                    if(row == null)
+                    {
+                        break;
+                    }
+                    k = row;
                     v = (Long)1L;
                 }
                 Object oldv = result.get(k);
@@ -683,12 +748,15 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                 }
                 else
                 {
-                    throw new RuntimeException("Cannot convert bag to Map<"
-                        + k.getClass().getName()
-                        + ", "
-                        + v.getClass().getName()
-                        + ">"
-                        );
+                    if(oldv != null)
+                    {
+                        throw new RuntimeException("Cannot convert array to Map<"
+                            + k.getClass().getName()
+                            + ", "
+                            + v.getClass().getName()
+                            + "> - duplicate keys found"
+                            );
+                    }
                 }
                 result.put(k, v);
             }
@@ -697,25 +765,18 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
     }
     
     
-    // For Hive, Tuple is a Struct.
-    // Note: a tuple itself won't be nullable, but if it is marked as nullable, all its fields should be nullable.
-    static class LoadFieldTuple extends LoadFieldNestable<List<Object>>
+    // Note: if a struct is marked as nullable, all its fields should be nullable.
+    static class LoadFieldStruct extends LoadFieldNestable<List<Object>>
     {
-        List<Object> tuple;
         boolean created = false; // deprecated?
         StructTypeInfo hiveStructTypeInfo;
         
-        LoadFieldTuple(StructTypeInfo ti)
+        LoadFieldStruct(StructTypeInfo ti)
         {
             super();
             this.hiveTypeInfo = ti;
             this.hiveStructTypeInfo = ti;
-            int nfields = ti.getAllStructFieldTypeInfos().size();
-            this.tuple = new ArrayList<Object>(nfields);
-            for(int i = 0; i < nfields; i++)
-            {
-                this.tuple.add(null);
-            }
+            //int nfields = ti.getAllStructFieldTypeInfos().size();
         }
         
         List<Object> _getValue(Message msg, int how)
@@ -726,7 +787,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
             {
                 throw new RuntimeException("Field count mismatch (pigSchema != fields)");
             }
-            List<Object> t = this.tuple;
+            List<Object> t = new ArrayList<Object>(nfields);
             if(created || protoFieldPath == null)
             {
                 for(int i = 0; i < nfields; i++)
@@ -740,11 +801,11 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                         {
                             return null;
                         }
-                        t.set(i, x);
+                        t.add(x);
                     }
                     else
                     {
-                        t.set(i, lf.getValue(msg));
+                        t.add(lf.getValue(msg));
                     }
                 }
             }
@@ -781,7 +842,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
                 {
                     LoadField lf = fields.get(i);
                     lf.nullable = lf.nullable || this.nullable; // Propagate nullable.
-                    t.set(i, lf.getValue(msg));
+                    t.add(lf.getValue(msg));
                 }
             }
             return t;
@@ -877,7 +938,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         }
     }
     
-    static class LoadFieldBytes extends LoadFieldScalar<ByteArrayRef>
+    static class LoadFieldBytes extends LoadFieldScalar<byte[]>
     {
         LoadFieldBytes()
         {
@@ -885,11 +946,9 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
             this.hiveTypeInfo = TypeInfoFactory.binaryTypeInfo;
         }
         
-        static ByteArrayRef wrapByteString(byte[] x)
+        static byte[] wrapByteString(byte[] x)
         {
-            ByteArrayRef y = new ByteArrayRef();
-            y.setData(x);
-            return y;
+            return x;
         }
         
         static ByteString getValue(Message msg, String[] protoFieldPath, int how)
@@ -903,7 +962,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         }
         
         @Override
-        ByteArrayRef getValue(Message msg)
+        byte[] getValue(Message msg)
         {
             ByteString bs = getValue(msg, this.protoFieldPath, this.nullable ? -2 : -1);
             if(bs == null)
@@ -914,7 +973,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         }
         
         @Override
-        ByteArrayRef getValueRepeated(Message msg, int index)
+        byte[] getValueRepeated(Message msg, int index)
         {
             ByteString bs = getValue(msg, this.protoFieldPath, index);
             if(bs == null)

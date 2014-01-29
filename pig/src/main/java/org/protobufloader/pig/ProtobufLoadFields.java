@@ -1,5 +1,5 @@
 
-package org.protobufloader;
+package org.protobufloader.pig;
 
 
 import java.io.IOException;
@@ -54,7 +54,7 @@ import com.google.protobuf.ByteString;
 
 import org.apache.hadoop.conf.Configuration;
 
-import org.apache.commons.codec.binary.Base64;
+import org.protobufloader.util.Base64;
 
 
 @SuppressWarnings("unchecked")
@@ -179,7 +179,8 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                     
                     updateInputInfo();
                     
-                    //byte[] pbraw = Base64.decodeBase64(wholebuf, len);
+                    byte[] pbraw = Base64.decodeBase64(wholebuf, len);
+                    /*
                     byte[] goodbuf = wholebuf;
                     if(goodbuf.length != len)
                     {
@@ -187,6 +188,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                         System.arraycopy(wholebuf, 0, goodbuf, 0, len);
                     }
                     byte[] pbraw = Base64.decodeBase64(goodbuf);
+                    */
                     
                     msgSize = pbraw.length;
                     Message.Builder builder = newBuilder();

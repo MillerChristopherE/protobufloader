@@ -8,4 +8,9 @@
   <artifactId>protobufloader-parent</artifactId>
   <version>0.1-SNAPSHOT</version>
   <packaging>pom</packaging>
+  
+  <modules>
+    <module>util</module>
+  </modules>
+  
 </project>

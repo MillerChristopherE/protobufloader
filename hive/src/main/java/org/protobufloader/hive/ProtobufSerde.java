@@ -1,4 +1,4 @@
-package org.protobufloader;
+package org.protobufloader.hive;
 
 import java.io.CharArrayReader;
 import java.io.IOException;
@@ -42,7 +42,7 @@ import com.google.protobuf.Message;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.ByteString;
 
-import org.apache.commons.codec.binary.Base64;
+import org.protobufloader.util.Base64;
 
 
 public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
@@ -1257,7 +1257,8 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
         
         updateInputInfo();
         
-        //byte[] pbraw = Base64.decodeBase64(wholebuf, len);
+        byte[] pbraw = Base64.decodeBase64(wholebuf, len);
+        /*
         byte[] goodbuf = wholebuf;
         if(goodbuf.length != len)
         {
@@ -1265,6 +1266,7 @@ public class ProtobufSerde extends AbstractDeserializer { // implements SerDe {
             System.arraycopy(wholebuf, 0, goodbuf, 0, len);
         }
         byte[] pbraw = Base64.decodeBase64(goodbuf);
+        */
         
         msgSize = pbraw.length;
         Message.Builder builder = newBuilder();

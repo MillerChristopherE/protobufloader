@@ -47,7 +47,7 @@ import com.google.protobuf.ByteString;
 import org.protobufloader.util.Base64;
 
 
-public class ProtobufLazySerde extends ProtobufSerde {
+public class ProtobufLazySerdeTest extends ProtobufSerde {
 
     @Override
     public void initialize(final Configuration conf, final Properties tbl) throws SerDeException {

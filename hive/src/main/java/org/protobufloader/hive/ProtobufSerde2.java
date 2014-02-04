@@ -42,6 +42,7 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
     String clsMapping;
     //Configuration conf;
     boolean printedError = false;
+    //boolean resultNullable = false;
     
     //@Override
     public void initialize(final Configuration conf, final Properties tbl) throws SerDeException {
@@ -51,6 +52,20 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
         if(clsMapping == null)
         {
             throw new SerDeException("class mapping expected: create ... with serdeproperties ( \"class\" = \"...\" )");
+        }
+        
+        String nullableColsString = tbl.getProperty("nullable");
+        if(nullableColsString != null)
+        {
+            if(nullableColsString.equals("*"))
+            {
+                //resultNullable = true;
+                throw new RuntimeException("Not supported yet: nullable = " + nullableColsString);
+            }
+            else if(!nullableColsString.equals(""))
+            {
+                throw new RuntimeException("Not supported yet: nullable = " + nullableColsString);
+            }
         }
         
         try {
@@ -254,6 +269,43 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
             return get(parent, fieldDesc, -1, true);
         }
         
+    }
+    
+    static protected class ProtoLazyMap extends ProtoLazyField
+    {
+        Map map;
+        MapFieldObjectInspector oi;
+        
+        Map getProtoMap()
+        {
+            //if(parent == null) return null;
+            if(map == null)
+            {
+                map = new HashMap();
+                int count = parent.getRepeatedFieldCount(fieldDesc);
+                for(int index = 0; index < count; index++)
+                {
+                    Message kvpmsg = (Message)parent.getRepeatedField(fieldDesc, index);
+                    Object key = kvpmsg.getField(oi.keyField.getProtoFieldDescriptor());
+                    Object value = kvpmsg.getField(oi.valueField.getProtoFieldDescriptor());
+                    map.put(key, value);
+                }
+            }
+            return map;
+        }
+        
+        @Override
+        public Object getProtoValue()
+        {
+            return getProtoMap();
+        }
+        
+        protected ProtoLazyMap(Message parent, MapFieldObjectInspector oi)
+        {
+            this.parent = parent;
+            this.fieldDesc = oi.fieldDesc;
+            this.oi = oi;
+        }
     }
     
     static abstract class PrimitiveFieldObjectInspector
@@ -627,6 +679,109 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
     }
     
     
+    static class MapFieldObjectInspector implements MapObjectInspector, IProtoObjectInspector
+    {
+        Descriptors.FieldDescriptor fieldDesc;
+        MessageInspector kvpInspector;
+        IProtoObjectInspector keyField, valueField; // Note: actual fields in the proto, not the data in the serde.
+        // Data returned from the serde for key/value are the actual types, since it's fully loaded at first key lookup.
+        ObjectInspector serdeKeyOI, serdeValueOI;
+        
+        public static MapFieldObjectInspector tryCreate(Descriptors.FieldDescriptor fieldDesc, IProtoObjectInspector testKvpInspector)
+        {
+            if(fieldDesc.isRepeated())
+            {
+                if(testKvpInspector instanceof MessageInspector)
+                {
+                    MessageInspector kvpInspector = (MessageInspector)testKvpInspector;
+                    List<IProtoObjectInspector> fields = kvpInspector.getMessageFieldInspectors();
+                    if(fields.size() == 2)
+                    {
+                        IProtoObjectInspector keyf = fields.get(0);
+                        IProtoObjectInspector valf = fields.get(1);
+                        if("key".equals(keyf.getProtoFieldName()) && "value".equals(valf.getProtoFieldName()))
+                        {
+                            if(keyf instanceof PrimitiveObjectInspector && valf instanceof PrimitiveObjectInspector)
+                            {
+                                return new MapFieldObjectInspector(fieldDesc, kvpInspector);
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+        
+        MapFieldObjectInspector(Descriptors.FieldDescriptor fieldDesc, MessageInspector kvpInspector)
+        {
+            this.fieldDesc = fieldDesc;
+            this.kvpInspector = kvpInspector;
+            List<IProtoObjectInspector> fields = kvpInspector.getMessageFieldInspectors();
+            this.keyField = fields.get(0);
+            this.valueField = fields.get(1);
+            this.serdeKeyOI = PrimitiveObjectInspectorFactory.getPrimitiveObjectInspectorFromClass(
+                ((PrimitiveObjectInspector)this.keyField).getJavaPrimitiveClass()
+                );
+            this.serdeValueOI = PrimitiveObjectInspectorFactory.getPrimitiveObjectInspectorFromClass(
+                ((PrimitiveObjectInspector)this.valueField).getJavaPrimitiveClass()
+                );
+        }
+        
+        public ObjectInspector getMapKeyObjectInspector()
+        {
+            //return keyField;
+            return serdeKeyOI;
+        }
+        
+        public ObjectInspector getMapValueObjectInspector()
+        {
+            //return valueField;
+            return serdeValueOI;
+        }
+        
+        public Map getMap(Object data)
+        {
+            //if(data == null) return null;
+            ProtoLazyMap plm = (ProtoLazyMap)data;
+            return plm.getProtoMap();
+        }
+        
+        public Object getMapValueElement(Object data, Object key)
+        {
+            //if(data == null) return null;
+            ProtoLazyMap plm = (ProtoLazyMap)data;
+            return plm.getProtoMap().get(key);
+        }
+        
+        public int getMapSize(Object data)
+        {
+            //if(data == null) return null;
+            ProtoLazyMap plm = (ProtoLazyMap)data;
+            return plm.getProtoMap().size();
+        }
+        
+        public String getTypeName()
+        {
+            return "map<" + keyField.getTypeName() + "," + valueField.getTypeName() + ">";
+        }
+        
+        public Category getCategory()
+        {
+            return Category.MAP;
+        }
+        
+        public String getProtoFieldName()
+        {
+            return kvpInspector.getProtoFieldName();
+        }
+        
+        public Descriptors.FieldDescriptor getProtoFieldDescriptor()
+        {
+            return fieldDesc;
+        }
+    }
+    
+    
     static class MessageInspector extends StructObjectInspector implements IProtoObjectInspector
     {
         Descriptors.FieldDescriptor fieldDesc; // null for root!
@@ -707,7 +862,15 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
             }
             if(fd.isRepeated())
             {
-                oi = new RepeatedFieldObjectInspector(fd, oi);
+                MapFieldObjectInspector mapoi = MapFieldObjectInspector.tryCreate(fd, oi);
+                if(mapoi != null)
+                {
+                    oi = mapoi;
+                }
+                else
+                {
+                    oi = new RepeatedFieldObjectInspector(fd, oi);
+                }
             }
             return oi;
         }
@@ -725,6 +888,12 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
                     fields.add(foi);
                 }
             }
+        }
+        
+        public List<IProtoObjectInspector> getMessageFieldInspectors()
+        {
+            ensureLoaded();
+            return this.fields;
         }
         
         @Override
@@ -756,6 +925,18 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
             return null;
         }
         
+        private final ProtoLazyField getProtoLazyField(Message msgparent, IProtoObjectInspector foi)
+        {
+            if(foi.getCategory() == Category.MAP)
+            {
+                return new ProtoLazyMap(msgparent, (MapFieldObjectInspector)foi);
+            }
+            else
+            {
+                return ProtoLazyField.get(msgparent, foi.getProtoFieldDescriptor());
+            }
+        }
+        
         @Override
         public Object getStructFieldData(Object data, StructField fieldRef)
         {
@@ -767,7 +948,7 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
             IProtoLazy plfparent = (IProtoLazy)data;
             Message msgparent = (Message)plfparent.getProtoValue();
             IProtoObjectInspector foi = (IProtoObjectInspector)fieldRef.getFieldObjectInspector();
-            return ProtoLazyField.get(msgparent, foi.getProtoFieldDescriptor());
+            return getProtoLazyField(msgparent, foi);
         }
         
         @Override
@@ -784,7 +965,7 @@ public class ProtobufSerde2 extends AbstractDeserializer { // implements SerDe {
             for(int i = 0; i < fields.size(); i++)
             {
                 IProtoObjectInspector foi = fields.get(i);
-                results.add(ProtoLazyField.get(msgparent, foi.getProtoFieldDescriptor()));
+                results.add(getProtoLazyField(msgparent, foi));
             }
             return results;
         }

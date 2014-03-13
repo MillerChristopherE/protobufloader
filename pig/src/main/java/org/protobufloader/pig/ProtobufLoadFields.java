@@ -15,10 +15,10 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.compress.BZip2Codec;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.GzipCodec;
-import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.apache.hadoop.mapreduce.Job;
@@ -77,11 +77,9 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
     protected LoadFieldTuple resultType;
     boolean resultNullable = false;
     
+    public int allowInputFailure = 0;
+    
     public ProtobufLoadFields(String fields, String clsMapping) throws IOException {
-        if(-1 != fields.indexOf("::"))
-        {
-            throw new IOException("Invalid schema: " + fields);
-        }
         try
         {
             if(fields.equals("*"))
@@ -128,6 +126,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
     Text lineText = null;
     int lineSize = -1; // Number of bytes in the line (e.g. base64 length).
     int msgSize = -1; // Number of bytes in the line's protobuf message.
+    long failures = 0;
     
     void updateInputInfo()
     {
@@ -161,6 +160,14 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
             cachedInputFilePath = "";
             cachedInputSplitDateY = ""; cachedInputSplitDateM = "";
             cachedInputSplitDateD = ""; cachedInputSplitDateH = "";
+        }
+    }
+    
+    void _checkfail()
+    {
+        if(failures > (long)allowInputFailure)
+        {
+            throw new RuntimeException("Too many failures reading input");
         }
     }
     
@@ -198,6 +205,8 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                         PigStatusReporter rep = PigStatusReporter.getInstance();
                         rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:_total").increment(1);
                         rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:null").increment(1);
+                        failures++;
+                        _checkfail();
                     } else {
                         // Return result:
                         return getTuple(msg);
@@ -206,6 +215,8 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                     PigStatusReporter rep = PigStatusReporter.getInstance();
                     rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:_total").increment(1);
                     rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:" + e.getMessage()).increment(1);
+                    failures++;
+                    _checkfail();
                     continue;
                 } catch (InterruptedException e) {
                     int errCode = 6018;
@@ -219,12 +230,19 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                     }
                     PigStatusReporter rep = PigStatusReporter.getInstance();
                     rep.getCounter("ProtobufLoadFields", "throw:" + e.getClass().getName()).increment(1);
+                    failures++;
+                    _checkfail();
                     continue;
                 }
             }
         }
         catch(IOException e)
         {
+            /*
+            PigStatusReporter rep = PigStatusReporter.getInstance();
+            rep.getCounter("ProtobufLoadFields", "IOException:_total").increment(1);
+            rep.getCounter("ProtobufLoadFields", "IOException:" + e.getMessage()).increment(1);
+            */
             throw e;
         }
         catch(RuntimeException e)
@@ -255,13 +273,89 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
     protected Tuple getTuple(Message msg) throws IOException {
         return resultType.getValue(msg);
     }
+    
+    
+    public static class LineRecordReader extends org.apache.hadoop.mapreduce.lib.input.LineRecordReader
+    {
+        int failstate = 0;
+        
+        public LineRecordReader(boolean allowEntireFileFail)
+        {
+            if(allowEntireFileFail)
+            {
+                failstate = 1;
+            }
+        }
+        
+        public LineRecordReader()
+        {
+            this(false);
+        }
+        
+        
+        @Override
+        public void initialize(InputSplit genericSplit,
+                org.apache.hadoop.mapreduce.TaskAttemptContext context) throws IOException
+        {
+            try
+            {
+                super.initialize(genericSplit, context);
+            }
+            catch(IOException e)
+            {
+                if(failstate == 0)
+                {
+                    throw e;
+                }
+                failstate = 2;
+            }
+        }
+        
+        @Override
+        public boolean nextKeyValue() throws IOException
+        {
+            if(failstate == 2)
+            {
+                PigStatusReporter rep = PigStatusReporter.getInstance();
+                rep.getCounter("ProtobufLoadFields", "IOException:_total").increment(1);
+                rep.getCounter("ProtobufLoadFields", "IOException:ENTIRE_FILE_FAIL").increment(1);
+                return false;
+            }
+            return super.nextKeyValue();
+        }
+    }
+    
+    //public static class InputFormat extends org.apache.hadoop.mapreduce.lib.input.TextInputFormat
+    public static class InputFormat extends PigTextInputFormat
+    {
+        boolean allowEntireFileFail;
+        
+        public InputFormat(boolean allowEntireFileFail)
+        {
+            this.allowEntireFileFail = allowEntireFileFail;
+        }
+        
+        public InputFormat()
+        {
+            this(false);
+        }
+        
+        @Override
+        public RecordReader<LongWritable, Text> createRecordReader(InputSplit split,
+                org.apache.hadoop.mapreduce.TaskAttemptContext context)
+        {
+            return new LineRecordReader(allowEntireFileFail);
+        }
+    }
+    
 
     @Override
-    public InputFormat getInputFormat() {
+    public org.apache.hadoop.mapreduce.InputFormat getInputFormat() {
         if(loadLocation.endsWith(".bz2") || loadLocation.endsWith(".bz")) {
             return new Bzip2TextInputFormat();
         } else {
-            return new PigTextInputFormat();
+            //return new PigTextInputFormat();
+            return new InputFormat(allowInputFailure >= Short.MAX_VALUE); // This class' input format.
         }
     }
 

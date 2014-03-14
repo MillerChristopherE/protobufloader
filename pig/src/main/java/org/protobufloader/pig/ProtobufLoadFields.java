@@ -163,11 +163,11 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         }
     }
     
-    void _checkfail()
+    void _checkfail(Throwable t)
     {
         if(failures > (long)allowInputFailure)
         {
-            throw new RuntimeException("Too many failures reading input");
+            throw new RuntimeException("Too many failures reading input", t);
         }
     }
     
@@ -194,7 +194,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                         rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:_total").increment(1);
                         rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:null").increment(1);
                         failures++;
-                        _checkfail();
+                        _checkfail(null);
                     } else {
                         // Return result:
                         return getTuple(msg);
@@ -204,7 +204,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                     rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:_total").increment(1);
                     rep.getCounter("ProtobufLoadFields", "ProtobufParseFail:" + e.getMessage()).increment(1);
                     failures++;
-                    _checkfail();
+                    _checkfail(e);
                     continue;
                 } catch (InterruptedException e) {
                     int errCode = 6018;
@@ -219,7 +219,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                     PigStatusReporter rep = PigStatusReporter.getInstance();
                     rep.getCounter("ProtobufLoadFields", "throw:" + e.getClass().getName()).increment(1);
                     failures++;
-                    _checkfail();
+                    _checkfail(e);
                     continue;
                 }
             }
@@ -1338,6 +1338,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
     void ensureResultType(Configuration conf) throws IOException
     {
         this.conf = conf;
+        this.allowInputFailure = conf.getInt("protobufloader.input.failures.allow", allowInputFailure);
         
         if(newBuilderMethod == null)
         {

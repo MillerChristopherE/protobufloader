@@ -9,10 +9,10 @@ import java.lang.reflect.Method;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
-import org.apache.pig.tools.pigstats.PigStatusReporter;
-
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.fs.FileStatus;
+import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.BytesWritable;
@@ -63,8 +63,7 @@ public abstract class ProtoInputFormat
     @Override
     protected List<org.apache.hadoop.fs.FileStatus> listStatus(JobContext job) throws IOException
     {
-        return org.apache.pig.backend.hadoop.executionengine.util.MapRedUtil
-            .getAllFileRecursively(super.listStatus(job), job.getConfiguration());
+        return getAllFileRecursively(super.listStatus(job), job.getConfiguration());
     }
     
     
@@ -90,7 +89,7 @@ public abstract class ProtoInputFormat
             boolean isbin = false;
             Configuration job = context.getConfiguration();
             // First check the property.
-            String propfmt = job.get("protobufloader.format");
+            String propfmt = job.get("protobufloader.format"); // bin or line
             if(propfmt != null)
             {
                 if("bin".equals(propfmt))
@@ -105,7 +104,10 @@ public abstract class ProtoInputFormat
                 {
                     FileSplit fsplit = (FileSplit)split;
                     String inputPath = fsplit.getPath().toString();
-                    if(inputPath.endsWith(".bin") || inputPath.endsWith(".bin.lzo"))
+                    if(inputPath.endsWith(".bin")
+                        || inputPath.endsWith(".bin.lzo")
+                        || inputPath.endsWith(".bin.gz")
+                        )
                     {
                         isbin = true;
                     }
@@ -113,8 +115,10 @@ public abstract class ProtoInputFormat
             }
             if(isbin)
             {
+                System.out.println("AnyInput: using RecordReaderBin");
                 return new RecordReaderBin(allowEntireFileFail);
             }
+            System.out.println("AnyInput: using RecordReaderLine");
             return new RecordReaderLine(allowEntireFileFail);
         }
     }
@@ -227,16 +231,18 @@ public abstract class ProtoInputFormat
         {
             if(failstate == 2)
             {
+                System.out.println("IOException:ENTIRE_FILE_FAIL");
+                /*
                 PigStatusReporter rep = PigStatusReporter.getInstance();
                 rep.getCounter("ProtobufLoadFields", "IOException:_total").increment(1);
                 rep.getCounter("ProtobufLoadFields", "IOException:ENTIRE_FILE_FAIL").increment(1);
+                */
                 return false;
             }
             try
             {
                 value.readFields(in);
-                recnum++;
-                key.set(recnum);
+                key.set(++recnum);
                 return true;
             }
             catch(EOFException eof)
@@ -280,7 +286,7 @@ public abstract class ProtoInputFormat
     {
         int failstate = 0;
         org.apache.hadoop.mapreduce.lib.input.LineRecordReader input;
-        BytesWritable value = new BytesWritable(new byte[1024]);
+        BytesWritable value;
         
         public RecordReaderLine(boolean allowEntireFileFail)
         {
@@ -324,35 +330,89 @@ public abstract class ProtoInputFormat
         {
             if(failstate == 2)
             {
+                System.out.println("IOException:ENTIRE_FILE_FAIL");
+                /*
                 PigStatusReporter rep = PigStatusReporter.getInstance();
                 rep.getCounter("ProtobufLoadFields", "IOException:_total").increment(1);
                 rep.getCounter("ProtobufLoadFields", "IOException:ENTIRE_FILE_FAIL").increment(1);
+                */
                 return false;
             }
-            return input.nextKeyValue();
+            if(input.nextKeyValue())
+            {
+                Text line = input.getCurrentValue();
+                byte[] pbraw = Base64.decodeBase64(line.getBytes(), line.getLength());
+                value = new BytesWritable(pbraw);
+                return true;
+            }
+            return false;
         }
         
         @Override
-        public LongWritable getCurrentKey() {
+        public LongWritable getCurrentKey()
+        {
             return input.getCurrentKey();
         }
         
         @Override
-        public BytesWritable getCurrentValue() {
-            Text line = input.getCurrentValue();
-            byte[] pbraw = Base64.decodeBase64(value.getBytes(), value.getLength());
-            value.set(pbraw, 0, pbraw.length);
+        public BytesWritable getCurrentValue()
+        {
             return value;
         }
         
-        public float getProgress() {
+        public float getProgress()
+        {
             return input.getProgress();
         }
         
-        public void close() throws IOException {
+        public void close() throws IOException
+        {
             input.close();
         }
     }
+    
+    
+    // Other helpers:
+    
+    // The Apache Software Foundation.
+    public static List<FileStatus> getAllFileRecursively(
+            List<FileStatus> files, Configuration conf) throws IOException {
+        List<FileStatus> result = new ArrayList<FileStatus>();
+        int len = files.size();
+        for (int i = 0; i < len; ++i) {
+            FileStatus file = files.get(i);
+            if (file.isDir()) {
+                Path p = file.getPath();
+                org.apache.hadoop.fs.FileSystem fs = p.getFileSystem(conf);
+                addInputPathRecursively(result, fs, p, hiddenFileFilter);
+            } else {
+                result.add(file);
+            }
+        }
+        System.out.println("Total input paths to process : " + result.size()); 
+        return result;
+    }
+    
+    // The Apache Software Foundation.
+    private static void addInputPathRecursively(List<FileStatus> result,
+            org.apache.hadoop.fs.FileSystem fs, Path path, PathFilter inputFilter) 
+            throws IOException {
+        for (FileStatus stat: fs.listStatus(path, inputFilter)) {
+            if (stat.isDir()) {
+                addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
+            } else {
+                result.add(stat);
+            }
+        }
+    }
+
+    // The Apache Software Foundation.
+    private static final PathFilter hiddenFileFilter = new PathFilter(){
+        public boolean accept(Path p){
+            String name = p.getName();
+            return !name.startsWith("_") && !name.startsWith(".");
+        }
+    };
     
     
 }

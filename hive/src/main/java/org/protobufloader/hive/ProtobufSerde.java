@@ -1,6 +1,6 @@
 package org.protobufloader.hive;
 
 // Uses the current version.
-public class ProtobufSerde extends ProtobufSerde1
+public class ProtobufSerde extends ProtobufSerde2
 {
 }

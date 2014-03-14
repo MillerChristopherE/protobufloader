@@ -26,7 +26,7 @@ import org.apache.hadoop.hive.serde2.SerDeStats;
 import org.apache.hadoop.hive.serde2.objectinspector.*;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.*;
 import org.apache.hadoop.hive.serde2.typeinfo.*;
-import org.apache.hadoop.io.*;;
+import org.apache.hadoop.io.*;
 
 import com.google.protobuf.Message;
 import com.google.protobuf.Descriptors;

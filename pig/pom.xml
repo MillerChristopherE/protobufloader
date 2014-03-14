@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.protobufloader</groupId>
     <artifactId>protobufloader-parent</artifactId>
-    <version>0.1-SNAPSHOT</version>
+    <version>0.2</version>
   </parent>
   
   <groupId>org.protobufloader</groupId>
@@ -39,7 +39,7 @@
     <dependency>
       <groupId>org.protobufloader</groupId>
       <artifactId>protobufloader-util</artifactId>
-      <version>0.1-SNAPSHOT</version>
+      <version>0.2</version>
     </dependency>
   </dependencies>
   

@@ -7,7 +7,7 @@
   <parent>
     <groupId>org.protobufloader</groupId>
     <artifactId>protobufloader-parent</artifactId>
-    <version>0.1-SNAPSHOT</version>
+    <version>0.2</version>
   </parent>
   
   <groupId>org.protobufloader</groupId>
@@ -16,6 +16,11 @@
   <name>protobufloader-util</name>
   
   <dependencies>
+    <dependency>
+      <groupId>org.apache.hadoop</groupId>
+      <artifactId>hadoop-core</artifactId>
+      <version>1.0.4</version>
+    </dependency>
     <!--
     <dependency>
       <groupId>org.apache.commons</groupId>

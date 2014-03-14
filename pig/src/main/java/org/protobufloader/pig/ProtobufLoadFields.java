@@ -1,23 +1,22 @@
-
 package org.protobufloader.pig;
 
+import org.protobufloader.util.ProtoInputFormat;
 
-import java.io.IOException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
-import java.util.HashMap;
-import java.util.Properties;
+import java.io.*;
+import java.util.*;
 import java.lang.reflect.Method;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.compress.BZip2Codec;
 import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.io.compress.CompressionCodecFactory;
 import org.apache.hadoop.io.compress.GzipCodec;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
@@ -25,8 +24,11 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.RecordWriter;
+import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.conf.Configuration;
+
 import org.apache.pig.*;
 import org.apache.pig.data.DataType;
 import org.apache.pig.backend.executionengine.ExecException;
@@ -46,15 +48,11 @@ import org.apache.pig.impl.util.StorageUtil;
 import org.apache.pig.impl.util.UDFContext;
 import org.apache.pig.impl.util.Utils;
 import org.apache.pig.impl.logicalLayer.schema.Schema;
-
 import org.apache.pig.tools.pigstats.PigStatusReporter;
+
 import com.google.protobuf.Message;
 import com.google.protobuf.Descriptors;
 import com.google.protobuf.ByteString;
-
-import org.apache.hadoop.conf.Configuration;
-
-import org.protobufloader.util.Base64;
 
 
 @SuppressWarnings("unchecked")
@@ -123,9 +121,8 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
     java.util.regex.Pattern inputSplitPattern = java.util.regex.Pattern
         .compile(".*\\b(\\d\\d\\d\\d)[-/](\\d\\d)[-/](\\d\\d)([-/](\\d\\d))?\\b.*"); // yyyy mm dd x hh
     
-    Text lineText = null;
-    int lineSize = -1; // Number of bytes in the line (e.g. base64 length).
-    int msgSize = -1; // Number of bytes in the line's protobuf message.
+    int msgSize = 0; // Number of bytes in the current protobuf message.
+    byte[] msgRaw = null; // Raw bytes of the current message, up to msgSize.
     long failures = 0;
     
     void updateInputInfo()
@@ -133,28 +130,31 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         Object inputSplitObj = pigSplit.getWrappedSplit();
         if(inputSplitObj != sameInputSplitObj) // Object identity.
         {
-            FileSplit inputSplit = (FileSplit)inputSplitObj;
-            if(inputSplit != null)
+            if(inputSplitObj instanceof FileSplit)
             {
-                String inputPath = inputSplit.getPath().toString();
-                cachedInputFilePath = inputPath;
-                System.out.println("Input: " + inputPath);
-                java.util.regex.Matcher mx = inputSplitPattern.matcher(inputPath);
-                if(mx.matches())
+                FileSplit inputSplit = (FileSplit)inputSplitObj;
+                if(inputSplit != null)
                 {
-                    String y = mx.group(1);
-                    String m = mx.group(2);
-                    String d = mx.group(3);
-                    String h = mx.group(5);
-                    if(h == null)
+                    String inputPath = inputSplit.getPath().toString();
+                    cachedInputFilePath = inputPath;
+                    System.out.println("Input: " + inputPath);
+                    java.util.regex.Matcher mx = inputSplitPattern.matcher(inputPath);
+                    if(mx.matches())
                     {
-                        h = "";
+                        String y = mx.group(1);
+                        String m = mx.group(2);
+                        String d = mx.group(3);
+                        String h = mx.group(5);
+                        if(h == null)
+                        {
+                            h = "";
+                        }
+                        // Cache it:
+                        sameInputSplitObj = inputSplitObj;
+                        cachedInputSplitDateY = y; cachedInputSplitDateM = m;
+                        cachedInputSplitDateD = d; cachedInputSplitDateH = h;
+                        return;
                     }
-                    // Cache it:
-                    sameInputSplitObj = inputSplitObj;
-                    cachedInputSplitDateY = y; cachedInputSplitDateM = m;
-                    cachedInputSplitDateD = d; cachedInputSplitDateH = h;
-                    return;
                 }
             }
             cachedInputFilePath = "";
@@ -178,28 +178,16 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         try {
             while(in.nextKeyValue()) {
                 try {
-                    Text value = (Text) in.getCurrentValue();
-                    byte[] wholebuf = value.getBytes();
-                    int len = value.getLength();
-                    lineSize = len;
-                    lineText = value;
+                    BytesWritable value = (BytesWritable)in.getCurrentValue();
+                    byte[] pbraw = value.getBytes();
+                    int pbrawlen = value.getLength();
                     
                     updateInputInfo();
+                    msgSize = pbrawlen;
+                    msgRaw = pbraw;
                     
-                    byte[] pbraw = Base64.decodeBase64(wholebuf, len);
-                    /*
-                    byte[] goodbuf = wholebuf;
-                    if(goodbuf.length != len)
-                    {
-                        goodbuf = new byte[len];
-                        System.arraycopy(wholebuf, 0, goodbuf, 0, len);
-                    }
-                    byte[] pbraw = Base64.decodeBase64(goodbuf);
-                    */
-                    
-                    msgSize = pbraw.length;
                     Message.Builder builder = newBuilder();
-                    Message msg = builder.mergeFrom(pbraw).build();
+                    Message msg = builder.mergeFrom(pbraw, 0, pbrawlen).build();
                     
                     if(msg == null) {
                         PigStatusReporter rep = PigStatusReporter.getInstance();
@@ -274,96 +262,17 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         return resultType.getValue(msg);
     }
     
-    
-    public static class LineRecordReader extends org.apache.hadoop.mapreduce.lib.input.LineRecordReader
-    {
-        int failstate = 0;
-        
-        public LineRecordReader(boolean allowEntireFileFail)
-        {
-            if(allowEntireFileFail)
-            {
-                failstate = 1;
-            }
-        }
-        
-        public LineRecordReader()
-        {
-            this(false);
-        }
-        
-        
-        @Override
-        public void initialize(InputSplit genericSplit,
-                org.apache.hadoop.mapreduce.TaskAttemptContext context) throws IOException
-        {
-            try
-            {
-                super.initialize(genericSplit, context);
-            }
-            catch(IOException e)
-            {
-                if(failstate == 0)
-                {
-                    throw e;
-                }
-                failstate = 2;
-            }
-        }
-        
-        @Override
-        public boolean nextKeyValue() throws IOException
-        {
-            if(failstate == 2)
-            {
-                PigStatusReporter rep = PigStatusReporter.getInstance();
-                rep.getCounter("ProtobufLoadFields", "IOException:_total").increment(1);
-                rep.getCounter("ProtobufLoadFields", "IOException:ENTIRE_FILE_FAIL").increment(1);
-                return false;
-            }
-            return super.nextKeyValue();
-        }
-    }
-    
-    //public static class InputFormat extends org.apache.hadoop.mapreduce.lib.input.TextInputFormat
-    public static class InputFormat extends PigTextInputFormat
-    {
-        boolean allowEntireFileFail;
-        
-        public InputFormat(boolean allowEntireFileFail)
-        {
-            this.allowEntireFileFail = allowEntireFileFail;
-        }
-        
-        public InputFormat()
-        {
-            this(false);
-        }
-        
-        @Override
-        public RecordReader<LongWritable, Text> createRecordReader(InputSplit split,
-                org.apache.hadoop.mapreduce.TaskAttemptContext context)
-        {
-            return new LineRecordReader(allowEntireFileFail);
-        }
-    }
-    
 
     @Override
     public org.apache.hadoop.mapreduce.InputFormat getInputFormat() {
-        if(loadLocation.endsWith(".bz2") || loadLocation.endsWith(".bz")) {
-            return new Bzip2TextInputFormat();
-        } else {
-            //return new PigTextInputFormat();
-            return new InputFormat(allowInputFailure >= Short.MAX_VALUE); // This class' input format.
-        }
+        return new ProtoInputFormat.AnyInput(allowInputFailure >= Short.MAX_VALUE); // This class' input format.
     }
 
     @Override
     public void prepareToRead(RecordReader reader, PigSplit split) throws IOException {
         this.in = reader;
         this.pigSplit = split;
-                
+        
         ensureResultType(split.getConf());
     }
 
@@ -503,14 +412,20 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
                         else if("lineSize".equals(name))
                         {
                             special = new SpecialField_lineSize();
+                            System.out.println("lineSize is deprecated");
                         }
                         else if("msgSize".equals(name))
                         {
                             special = new SpecialField_msgSize();
                         }
+                        else if("msgRaw".equals(name))
+                        {
+                            special = new SpecialField_msgRaw();
+                        }
                         else if("rawLine".equals(name))
                         {
                             special = new SpecialField_rawLine();
+                            System.out.println("rawLine is deprecated");
                         }
                     }
                     if(special != null)
@@ -1379,7 +1294,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         @Override
         Integer getValue(Message msg) throws IOException
         {
-            return lineSize;
+            return 0; // Deprecated
         }
     }
     class SpecialField_msgSize extends LoadField<Integer>
@@ -1394,6 +1309,18 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
             return msgSize;
         }
     }
+    class SpecialField_msgRaw extends LoadField<DataByteArray>
+    {
+        SpecialField_msgRaw()
+        {
+            pigType = DataType.BYTEARRAY;
+        }
+        @Override
+        DataByteArray getValue(Message msg) throws IOException
+        {
+            return new DataByteArray(msgRaw, 0, msgSize);
+        }
+    }
     class SpecialField_rawLine extends LoadField<String>
     {
         SpecialField_rawLine()
@@ -1403,7 +1330,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
         @Override
         String getValue(Message msg) throws IOException
         {
-            return lineText.toString();
+            return ""; // Deprecated.
         }
     }
 

@@ -341,7 +341,27 @@ public abstract class ProtoInputFormat
             if(input.nextKeyValue())
             {
                 Text line = input.getCurrentValue();
-                byte[] pbraw = Base64.decodeBase64(line.getBytes(), line.getLength());
+                byte[] pbraw;
+                try
+                {
+                    pbraw = Base64.decodeBase64(line.getBytes(), line.getLength());
+                }
+                catch(java.lang.ArrayIndexOutOfBoundsException oob)
+                {
+                    if(failstate == 1)
+                    {
+                        if(failstate == 1)
+                        {
+                            failstate = 3;
+                            System.out.println("Base64.decodeBase64 ArrayIndexOutOfBoundsException: " + oob.toString());
+                        }
+                        pbraw = new byte[0];
+                    }
+                    else
+                    {
+                        throw oob;
+                    }
+                }
                 value = new BytesWritable(pbraw);
                 return true;
             }

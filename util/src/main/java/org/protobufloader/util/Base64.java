@@ -522,7 +522,7 @@ public class Base64 { // implements BinaryEncoder, BinaryDecoder {
             }
         }
         
-        int addpadding = bytesCopied % FOURBYTE;
+        int addpadding = FOURBYTE - bytesCopied % FOURBYTE;
         for (int i = 0; i < addpadding; i++) {
             // Add the padding to make 4 char aligned.
             groomedData[bytesCopied++] = PAD;

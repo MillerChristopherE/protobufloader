@@ -348,7 +348,7 @@ public abstract class ProtoInputFormat
                 }
                 catch(java.lang.ArrayIndexOutOfBoundsException oob)
                 {
-                    if(failstate == 1)
+                    if(failstate != 0)
                     {
                         if(failstate == 1)
                         {

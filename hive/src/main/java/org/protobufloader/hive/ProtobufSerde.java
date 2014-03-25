@@ -1,6 +1,6 @@
 package org.protobufloader.hive;
 
-// Uses the current version.
+// Uses the stable serde which was used in this lib version.
 public class ProtobufSerde extends ProtobufSerde2
 {
 }

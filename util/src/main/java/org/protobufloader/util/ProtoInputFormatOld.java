@@ -28,17 +28,30 @@ public abstract class ProtoInputFormatOld
         extends org.apache.hadoop.mapred.FileInputFormat<LongWritable, BytesWritable>
         implements JobConfigurable
 {
-    protected boolean allowEntireFileFail;
+    protected int allowInputFailure = -1;
     private CompressionCodecFactory compressionCodecs = null;
+    
+    public ProtoInputFormatOld(int allowInputFailure) throws IOException
+    {
+        this.allowInputFailure = allowInputFailure;
+    }
     
     public ProtoInputFormatOld(boolean allowEntireFileFail) throws IOException
     {
-        this.allowEntireFileFail = allowEntireFileFail;
+        this(allowEntireFileFail ? Short.MAX_VALUE : 0);
     }
     
     public ProtoInputFormatOld() throws IOException
     {
-        this(false);
+        this(-1);
+    }
+    
+    protected void ensureSetup(JobConf job)
+    {
+        if(allowInputFailure == -1)
+        {
+            allowInputFailure = job.getInt("protobufloader.input.failures.allow", 0);
+        }
     }
     
     public void configure(JobConf job)
@@ -49,7 +62,7 @@ public abstract class ProtoInputFormatOld
     @Override
     protected boolean isSplitable(org.apache.hadoop.fs.FileSystem fs, Path file)
     {
-        return compressionCodecs.getCodec(file) != null;
+        return compressionCodecs.getCodec(file) == null;
     }
     
     @Override
@@ -64,6 +77,11 @@ public abstract class ProtoInputFormatOld
     // Any supported based on runtime conditions.
     public static class AnyInput extends ProtoInputFormatOld
     {
+        public AnyInput(int allowInputFailure) throws IOException
+        {
+            super(allowInputFailure);
+        }
+        
         public AnyInput(boolean allowEntireFileFail) throws IOException
         {
             super(allowEntireFileFail);
@@ -71,13 +89,14 @@ public abstract class ProtoInputFormatOld
         
         public AnyInput() throws IOException
         {
-            this(false);
+            super(-1);
         }
         
         @Override
         public RecordReader<LongWritable, BytesWritable> getRecordReader(InputSplit split,
             JobConf job, Reporter reporter) throws IOException
         {
+            ensureSetup(job);
             boolean isbin = false;
             // First check the property.
             String propfmt = job.get("protobufloader.format"); // bin or line
@@ -107,15 +126,20 @@ public abstract class ProtoInputFormatOld
             if(isbin)
             {
                 System.out.println("AnyInput: using RecordReaderBin");
-                return new RecordReaderBin(allowEntireFileFail, job, split);
+                return new RecordReaderBin(allowInputFailure, job, split);
             }
             System.out.println("AnyInput: using RecordReaderLine");
-            return new RecordReaderLine(allowEntireFileFail, job, split);
+            return new RecordReaderLine(allowInputFailure, job, split);
         }
     }
     
     public static class BinInput extends ProtoInputFormatOld
     {
+        public BinInput(int allowInputFailure) throws IOException
+        {
+            super(allowInputFailure);
+        }
+        
         public BinInput(boolean allowEntireFileFail) throws IOException
         {
             super(allowEntireFileFail);
@@ -123,19 +147,25 @@ public abstract class ProtoInputFormatOld
         
         public BinInput() throws IOException
         {
-            this(false);
+            super(-1);
         }
         
         @Override
         public RecordReader<LongWritable, BytesWritable> getRecordReader(InputSplit split,
             JobConf job, Reporter reporter) throws IOException
         {
-            return new RecordReaderBin(allowEntireFileFail, job, split);
+            ensureSetup(job);
+            return new RecordReaderBin(allowInputFailure, job, split);
         }
     }
     
     public static class LineInput extends ProtoInputFormatOld
     {
+        public LineInput(int allowInputFailure) throws IOException
+        {
+            super(allowInputFailure);
+        }
+        
         public LineInput(boolean allowEntireFileFail) throws IOException
         {
             super(allowEntireFileFail);
@@ -143,14 +173,15 @@ public abstract class ProtoInputFormatOld
         
         public LineInput() throws IOException
         {
-            this(false);
+            super(-1);
         }
         
         @Override
         public RecordReader<LongWritable, BytesWritable> getRecordReader(InputSplit split,
             JobConf job, Reporter reporter) throws IOException
         {
-            return new RecordReaderLine(allowEntireFileFail, job, split);
+            ensureSetup(job);
+            return new RecordReaderLine(allowInputFailure, job, split);
         }
     }
     
@@ -160,24 +191,21 @@ public abstract class ProtoInputFormatOld
     public static class RecordReaderBin
         implements org.apache.hadoop.mapred.RecordReader<LongWritable, BytesWritable>
     {
-        int failstate = 0;
+        int allowInputFailure = 0;
         long recnum = 0;
         CompressionCodecFactory compressionCodecs = null;
         DataInputStream in;
         long cur, end;
         
-        public RecordReaderBin(boolean allowEntireFileFail, JobConf job, InputSplit split) throws IOException
+        public RecordReaderBin(int allowInputFailure, JobConf job, InputSplit split) throws IOException
         {
-            if(allowEntireFileFail)
-            {
-                failstate = 1;
-            }
+            this.allowInputFailure = allowInputFailure;
             initialize(split, job);
         }
         
         public RecordReaderBin(JobConf job, InputSplit split) throws IOException
         {
-            this(false, job, split);
+            this(0, job, split);
         }
         
         public LongWritable createKey()
@@ -215,17 +243,17 @@ public abstract class ProtoInputFormatOld
             }
             catch(IOException e)
             {
-                if(failstate == 0)
+                if(allowInputFailure < Short.MAX_VALUE)
                 {
                     throw e;
                 }
-                failstate = 2;
+                allowInputFailure = -2;
             }
         }
         
         public boolean next(LongWritable key, BytesWritable value) throws IOException
         {
-            if(failstate == 2)
+            if(allowInputFailure == -2)
             {
                 System.out.println("IOException:ENTIRE_FILE_FAIL");
                 /*
@@ -277,22 +305,20 @@ public abstract class ProtoInputFormatOld
     public static class RecordReaderLine
         implements org.apache.hadoop.mapred.RecordReader<LongWritable, BytesWritable>
     {
-        int failstate = 0;
+        int allowInputFailure = 0;
+        boolean printedError = false;
         org.apache.hadoop.mapred.LineRecordReader input;
         Text tempvalue;
         
-        public RecordReaderLine(boolean allowEntireFileFail, JobConf job, InputSplit split) throws IOException
+        public RecordReaderLine(int allowInputFailure, JobConf job, InputSplit split) throws IOException
         {
-            if(allowEntireFileFail)
-            {
-                failstate = 1;
-            }
+            this.allowInputFailure = allowInputFailure;
             initialize(split, job);
         }
         
         public RecordReaderLine(JobConf job, InputSplit split) throws IOException
         {
-            this(false, job, split);
+            this(0, job, split);
         }
         
         public LongWritable createKey()
@@ -319,17 +345,17 @@ public abstract class ProtoInputFormatOld
             }
             catch(IOException e)
             {
-                if(failstate == 0)
+                if(allowInputFailure < Short.MAX_VALUE)
                 {
                     throw e;
                 }
-                failstate = 2;
+                allowInputFailure = -2;
             }
         }
         
         public boolean next(LongWritable key, BytesWritable value) throws IOException
         {
-            if(failstate == 2)
+            if(allowInputFailure == -2)
             {
                 System.out.println("IOException:ENTIRE_FILE_FAIL");
                 /*
@@ -349,11 +375,12 @@ public abstract class ProtoInputFormatOld
                 }
                 catch(java.lang.ArrayIndexOutOfBoundsException oob)
                 {
-                    if(failstate != 0)
+                    if(allowInputFailure > 0)
                     {
-                        if(failstate == 1)
+                        allowInputFailure--;
+                        if(!printedError)
                         {
-                            failstate = 3;
+                            printedError = true;
                             System.out.println("Base64.decodeBase64 ArrayIndexOutOfBoundsException: " + oob.toString());
                         }
                         pbraw = new byte[0];

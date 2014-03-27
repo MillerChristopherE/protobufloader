@@ -265,7 +265,7 @@ public class ProtobufLoadFields extends FileInputLoadFunc implements LoadMetadat
 
     @Override
     public org.apache.hadoop.mapreduce.InputFormat getInputFormat() {
-        return new ProtoInputFormat.AnyInput(allowInputFailure >= Short.MAX_VALUE); // This class' input format.
+        return new ProtoInputFormat.AnyInput(allowInputFailure); // This class' input format.
     }
 
     @Override
